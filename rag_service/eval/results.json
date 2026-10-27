@@ -1,0 +1,325 @@
+{
+ "corpus": {
+  "0.Solvabilité 2_version courte 2024-25 (1).pdf": {
+   "pages": 12,
+   "chars": 5313
+  },
+  "1.Pilier1 et ORSA 2024_M1.pdf": {
+   "pages": 73,
+   "chars": 42015
+  },
+  "Formation Solvabilite 2 - IRA (1).pdf": {
+   "pages": 106,
+   "chars": 25627
+  }
+ },
+ "strategies": {
+  "A. lignes + phrases, 1100/200 (production)": {
+   "chunks": 96,
+   "mean_chars": 785,
+   "max_chars": 1099,
+   "modes": {
+    "dense": {
+     "hit@1": 0.6923076923076923,
+     "hit@3": 0.7692307692307693,
+     "hit@5": 0.8461538461538461,
+     "mrr": 0.75,
+     "ranks": [
+      2,
+      4,
+      1,
+      1,
+      1,
+      1,
+      null,
+      1,
+      1,
+      1,
+      1,
+      1,
+      null
+     ]
+    },
+    "bm25": {
+     "hit@1": 0.3076923076923077,
+     "hit@3": 0.6153846153846154,
+     "hit@5": 0.9230769230769231,
+     "mrr": 0.5307692307692308,
+     "ranks": [
+      2,
+      null,
+      5,
+      5,
+      4,
+      1,
+      2,
+      2,
+      4,
+      1,
+      2,
+      1,
+      1
+     ]
+    },
+    "hybrid": {
+     "hit@1": 0.5384615384615384,
+     "hit@3": 0.8461538461538461,
+     "hit@5": 0.8461538461538461,
+     "mrr": 0.6794871794871795,
+     "ranks": [
+      2,
+      3,
+      1,
+      2,
+      1,
+      1,
+      null,
+      1,
+      2,
+      1,
+      1,
+      1,
+      null
+     ]
+    },
+    "hybrid_rerank": {
+     "hit@1": 1.0,
+     "hit@3": 1.0,
+     "hit@5": 1.0,
+     "mrr": 1.0,
+     "ranks": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+     ]
+    }
+   },
+   "top1_scores_in_corpus": [
+    0.343,
+    0.711,
+    0.973,
+    0.993,
+    0.906,
+    0.995,
+    1.0,
+    0.932,
+    0.996,
+    0.996,
+    0.984,
+    0.855,
+    0.826
+   ],
+   "top1_scores_out_of_corpus": {
+    "Quelles sont les limites quantitatives des fonds propres de Tier 2 et de Tier 3 ?": 0.147,
+    "Quel est le taux directeur actuel de la Banque centrale européenne ?": 0.02
+   },
+   "per_query_ranks": {
+    "Que représente le SCR et à quel niveau de confiance est-il calibré ?": 1,
+    "Quelles sont les bornes du MCR par rapport au SCR ?": 1,
+    "Comment se calcule la marge de risque ?": 1,
+    "Quelle est la formule du SCR en formule standard ?": 1,
+    "Qu'est-ce que l'ORSA et à quelle fréquence doit-il être réalisé ?": 1,
+    "Que sont les ajustements pour la capacité d'absorption des pertes par les provisions techniques et les impôts différés ?": 1,
+    "Quels sont les trois piliers de Solvabilité 2 ?": 1,
+    "Comment les modules de risque sont-ils agrégés pour obtenir le SCR de base ?": 1,
+    "Qu'est-ce que le best estimate des provisions techniques ?": 1,
+    "De quels sous-modules est composé le risque catastrophe en non-vie ?": 1,
+    "Comment se calcule le SCR des actifs incorporels ?": 1,
+    "Que se passe-t-il en cas de non-respect du SCR ou du MCR ?": 1,
+    "Qu'est-ce que le rapport SFCR et le RSR au titre du Pilier 3 ?": 1
+   }
+  },
+  "B. lignes + phrases, 400/80 (petits chunks)": {
+   "chunks": 236,
+   "mean_chars": 331,
+   "max_chars": 452,
+   "modes": {
+    "dense": {
+     "hit@1": 0.46153846153846156,
+     "hit@3": 0.8461538461538461,
+     "hit@5": 0.9230769230769231,
+     "mrr": 0.6474358974358974,
+     "ranks": [
+      null,
+      2,
+      1,
+      2,
+      1,
+      1,
+      3,
+      1,
+      1,
+      2,
+      4,
+      1,
+      3
+     ]
+    },
+    "bm25": {
+     "hit@1": 0.38461538461538464,
+     "hit@3": 0.7692307692307693,
+     "hit@5": 0.8461538461538461,
+     "mrr": 0.5833333333333333,
+     "ranks": [
+      1,
+      4,
+      null,
+      2,
+      3,
+      1,
+      2,
+      2,
+      null,
+      2,
+      1,
+      1,
+      1
+     ]
+    },
+    "hybrid": {
+     "hit@1": 0.6153846153846154,
+     "hit@3": 0.9230769230769231,
+     "hit@5": 0.9230769230769231,
+     "mrr": 0.7435897435897435,
+     "ranks": [
+      null,
+      1,
+      2,
+      1,
+      1,
+      1,
+      2,
+      1,
+      3,
+      3,
+      1,
+      1,
+      1
+     ]
+    },
+    "hybrid_rerank": {
+     "hit@1": 0.8461538461538461,
+     "hit@3": 1.0,
+     "hit@5": 1.0,
+     "mrr": 0.9230769230769231,
+     "ranks": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      1,
+      2,
+      1,
+      1,
+      1
+     ]
+    }
+   }
+  },
+  "C. une page = un chunk (structure du document)": {
+   "chunks": 191,
+   "mean_chars": 382,
+   "max_chars": 1744,
+   "modes": {
+    "dense": {
+     "hit@1": 0.5384615384615384,
+     "hit@3": 0.7692307692307693,
+     "hit@5": 0.9230769230769231,
+     "mrr": 0.658974358974359,
+     "ranks": [
+      3,
+      5,
+      1,
+      2,
+      1,
+      1,
+      null,
+      1,
+      1,
+      1,
+      3,
+      1,
+      5
+     ]
+    },
+    "bm25": {
+     "hit@1": 0.46153846153846156,
+     "hit@3": 0.6923076923076923,
+     "hit@5": 0.6923076923076923,
+     "mrr": 0.5641025641025641,
+     "ranks": [
+      2,
+      null,
+      null,
+      null,
+      3,
+      1,
+      1,
+      2,
+      null,
+      1,
+      1,
+      1,
+      1
+     ]
+    },
+    "hybrid": {
+     "hit@1": 0.7692307692307693,
+     "hit@3": 1.0,
+     "hit@5": 1.0,
+     "mrr": 0.8717948717948718,
+     "ranks": [
+      1,
+      2,
+      1,
+      2,
+      1,
+      1,
+      1,
+      1,
+      3,
+      1,
+      1,
+      1,
+      1
+     ]
+    },
+    "hybrid_rerank": {
+     "hit@1": 0.7692307692307693,
+     "hit@3": 1.0,
+     "hit@5": 1.0,
+     "mrr": 0.8846153846153846,
+     "ranks": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      2,
+      1,
+      1,
+      1,
+      1,
+      2
+     ]
+    }
+   }
+  }
+ }
+}

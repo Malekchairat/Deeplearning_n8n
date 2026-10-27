@@ -1,0 +1,25 @@
+\begin{table}[h]\centering\small
+\begin{tabular}{@{}lrrrrl@{}}\toprule
+\textbf{D\'ecoupage / mode} & hit@1 & hit@3 & hit@5 & MRR & \\\midrule
+\multicolumn{6}{@{}l}{\textbf{A. 1100/200} --- 96 chunks, 785 car. en moyenne}\\
+\quad dense & 69\,\% & 77\,\% & 85\,\% & 0,75 & \\
+\quad BM25 & 31\,\% & 62\,\% & 92\,\% & 0,53 & \\
+\quad hybride (RRF) & 54\,\% & 85\,\% & 85\,\% & 0,68 & \\
+\quad hybride + reranker & 100\,\% & 100\,\% & 100\,\% & 1,00 & \\
+\addlinespace[2pt]
+\multicolumn{6}{@{}l}{\textbf{B. 400/80} --- 236 chunks, 331 car. en moyenne}\\
+\quad dense & 46\,\% & 85\,\% & 92\,\% & 0,65 & \\
+\quad BM25 & 38\,\% & 77\,\% & 85\,\% & 0,58 & \\
+\quad hybride (RRF) & 62\,\% & 92\,\% & 92\,\% & 0,74 & \\
+\quad hybride + reranker & 85\,\% & 100\,\% & 100\,\% & 0,92 & \\
+\addlinespace[2pt]
+\multicolumn{6}{@{}l}{\textbf{C. page} --- 191 chunks, 382 car. en moyenne}\\
+\quad dense & 54\,\% & 77\,\% & 92\,\% & 0,66 & \\
+\quad BM25 & 46\,\% & 69\,\% & 69\,\% & 0,56 & \\
+\quad hybride (RRF) & 77\,\% & 100\,\% & 100\,\% & 0,87 & \\
+\quad hybride + reranker & 77\,\% & 100\,\% & 100\,\% & 0,88 & \\
+\addlinespace[2pt]
+\bottomrule\end{tabular}
+\caption{Qualit\'e du retrieval (13 questions du corpus, top-5, requ\^etes brutes).}
+\end{table}
+\textbf{Questions hors corpus.} Meilleur score du reranker~: 0,343 \`a 1,000 sur les questions du corpus (m\'ediane 0,973), contre 0,147, 0,020 sur les deux questions hors corpus (limites de Tier~; taux directeur de la BCE), pour un seuil de refus de 0,05.

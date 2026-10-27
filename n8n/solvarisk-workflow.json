@@ -1,0 +1,446 @@
+{
+  "name": "SolvaRisk – Pipeline n8n",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "scr-agent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -240,
+        16
+      ],
+      "id": "a729d71e-bc0b-4c62-957a-9146712f6ab9",
+      "name": "Webhook scr",
+      "webhookId": "d226122b-ec79-4d15-bca3-fa7657df4569"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== SOLVENCY II STANDARD FORMULA ENGINE v2.2 — n8n Code node (Run Once for All Items) =====\n// Corrections v2.1 : ordre matrice BSCR, matrice Non-Vie, taux d'impôt en %, regex SCR (exclusion \"de base\"), priorité R0220\nconst raw = $input.first().json;\nconst payload = raw.body ?? raw;\nconst OPT = { tolerancePct: 0.5, amcrDefault: 4.0, taxRate: 0.25, lacTpRate: 0, watchlist: 130, exportXlsx: false, ...(payload.options || {}) };\n\nconst warnings = [];\nconst warn = (m) => { if (!warnings.includes(m)) warnings.push(m); };\nconst r2 = (x) => (Number.isFinite(x) ? Math.round(x * 100) / 100 : 0);\nconst norm = (s) => String(s ?? '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/\\s+/g, ' ').trim();\nconst slug = (s) => norm(s).replace(/[^a-z0-9]/g, '');\n\n// Parse robuste : \"1 234,56\", \"1.234,56\", \"(12,3)\", \"12,5%\"\nconst num = (v) => {\n  if (typeof v === 'number') return Number.isFinite(v) ? v : null;\n  if (v === null || v === undefined) return null;\n  let s = String(v).trim().replace(/[\\s\\u00a0€%]/g, '');\n  if (!s) return null;\n  const neg = /^\\(.*\\)$/.test(s);\n  s = s.replace(/[()]/g, '');\n  if (s.includes(',') && s.includes('.')) s = s.lastIndexOf(',') > s.lastIndexOf('.') ? s.replace(/\\./g, '').replace(',', '.') : s.replace(/,/g, '');\n  else s = s.replace(',', '.');\n  const n = Number(s);\n  return Number.isFinite(n) ? (neg ? -n : n) : null;\n};\n// Tout est ramené en M€\nconst scale = (u) => {\n  const x = norm(u);\n  if (/^(md|mrd|bn|milliard|billion)/.test(x)) return 1e3;\n  if (/^(k|milliers|thousand)/.test(x)) return 1e-3;\n  if (/^(eur|euro|€)/.test(x)) return 1e-6;\n  return 1; // M€, millions, ratio, %\n};\nconst parseCode = (c) => {\n  const s = String(c || '').toUpperCase().replace(/\\s/g, '');\n  const t = s.match(/S\\.?(\\d{2})\\.?(\\d{2})/), r = s.match(/R(\\d{4})/), k = s.match(/C(\\d{4})/);\n  return { tpl: t ? `S.${t[1]}.${t[2]}` : null, row: r ? 'R' + r[1] : null, col: k ? 'C' + k[1] : null };\n};\n\n// ---------- 1. INGESTION (accepte data[] ou sheets{}, colonnes code/libelle/valeur OU Brut/Net) ----------\nconst IGNORE_SHEET = /pieuvre|synthese|matric|controle|result/i;\nlet src = [];\nif (payload.sheets && !Array.isArray(payload.sheets)) {\n  for (const [name, rows] of Object.entries(payload.sheets)) if (!IGNORE_SHEET.test(name) && Array.isArray(rows)) src.push(...rows);\n} else if (Array.isArray(payload.data)) src = payload.data;\nif (!src.length) throw new Error('Aucune ligne QRT reçue (payload.data ou payload.sheets).');\n\nconst entries = [];\nfor (const r of src) {\n  if (!r || typeof r !== 'object') continue;\n  const o = {};\n  for (const [k, v] of Object.entries(r)) o[slug(k)] = v;\n  const ks = Object.keys(o);\n  const f = (re) => ks.find((k) => re.test(k));\n  const kCode = f(/^(code|codeeiopa|codenoeud|ref|refeiopa)$/), kLab = f(/^(libelle|label|rubrique|name|nom)/);\n  const kNet = f(/^(montant)?net/), kBrut = f(/^(montant)?brut/), kVal = f(/^(valeur|value|montant)$/), kUnit = f(/^unit/);\n  const sc = scale(kUnit ? o[kUnit] : '');\n  const m = (k) => { const n = k ? num(o[k]) : null; return n === null ? null : n * sc; };\n  const code = String(kCode ? o[kCode] ?? '' : '');\n  const e = { code, label: norm(kLab ? o[kLab] : ''), ...parseCode(code), net: m(kNet), brut: m(kBrut), val: m(kVal) };\n  if (e.net === null && e.brut === null && e.val === null) continue;\n  entries.push(e);\n}\nconst amt = (e, b) => (e ? (b === 'brut' ? e.brut ?? e.val ?? e.net : e.net ?? e.val ?? e.brut) ?? null : null);\n\n// ---------- 2. DICTIONNAIRE : [gabarit, [[ligne, colonne?]...], regex libellé, regex exclusion] ----------\nconst SPEC = {\n  irUp: ['S.26.01', [['R0110']], /taux.*(hauss|up|increase)|interest.*(up|increase)/],\n  irDn: ['S.26.01', [['R0120']], /taux.*(baiss|down|decrease)|interest.*(down|decrease)/],\n  eq: ['S.26.01', [['R0200']], /action|equity/],\n  prop: ['S.26.01', [['R0300']], /immobilier|property/],\n  sp: ['S.26.01', [['R0400']], /spread/],\n  fx: ['S.26.01', [['R0500']], /change|currency|\\bfx\\b/],\n  conc: ['S.26.01', [['R0600']], /concentration/],\n  def1: ['S.26.02', [['R0100']], /type 1/],\n  def2: ['S.26.02', [['R0200']], /type 2/],\n  l_mort: ['S.26.03', [['R0100']], /mortalit/],\n  l_long: ['S.26.03', [['R0200']], /longevit/],\n  l_dis: ['S.26.03', [['R0300']], /invalidit|morbidit|disability/],\n  l_lapse: ['S.26.03', [['R0400']], /rachat|lapse/],\n  l_exp: ['S.26.03', [['R0500']], /frais|expense/],\n  l_rev: ['S.26.03', [['R0600']], /revision|rentes/],\n  l_cat: ['S.26.03', [['R0700']], /catastrophe|\\bcat\\b/],\n  h_slt: ['S.26.04', [['R0100']], /\\bslt\\b|similaire a la vie/, /non similaire|nslt/],\n  h_nslt: ['S.26.04', [['R0200']], /nslt|non similaire/],\n  h_cat: ['S.26.04', [['R0300']], /catastrophe|\\bcat\\b/],\n  n_pr: ['S.26.05', [['R0100']], /prime|premium/],\n  n_cat: ['S.26.05', [['R0200'], ['R0300']], /catastrophe|\\bcat\\b/],\n  n_lapse: ['S.26.05', [['R0300'], ['R0200']], /resiliation|lapse/],\n  repMkt: ['S.25.01', [['R0010']], /^(risque de marche|market risk)$/],\n  repDef: ['S.25.01', [['R0020']], /defaut de contrepartie|counterparty/],\n  repLife: ['S.25.01', [['R0030']], /souscription vie|life underwriting/],\n  repHlth: ['S.25.01', [['R0040']], /souscription sante|health underwriting/],\n  repNl: ['S.25.01', [['R0050']], /souscription non-vie|non-life underwriting/],\n  intang: ['S.25.01', [['R0070']], /incorporel|intangible/],\n  repBscr: ['S.25.01', [['R0100']], /bscr|scr de base|basic scr/],\n  op: ['S.25.01', [['R0130']], /operationnel|operational/],\n  lacTp: ['S.25.01', [['R0140']], /absorption.*provisions techniques|technical provisions.*(absorb|loss)|lac tp/],\n  lacDt: ['S.25.01', [['R0150']], /absorption.*impots differes|deferred tax.*(absorb|loss)|lac dt/],\n  // CORRECTIF : R0220 (SCR final, add-on inclus) prioritaire sur R0200 ; exclusion de \"SCR de base\"\n  repScr: ['S.25.01', [['R0220'], ['R0200']], /^(scr|solvency capital requirement)/, /bscr|de base|basic|mcr|ratio/],\n  prem_vie: ['S.25.01', [['R0131']], /primes.*vie/, /non[- ]vie/],\n  prem_nv: ['S.25.01', [['R0132']], /primes.*non[- ]vie/],\n  be_vie: ['S.25.01', [['R0133']], /best estimate vie/],\n  be_nv: ['S.25.01', [['R0134']], /best estimate non[- ]vie/],\n  frais_uc: ['S.25.01', [['R0135']], /unites de compte|\\buc\\b/],\n  fdb: ['S.25.01', [['R0460']], /participation aux benefices|\\bfdb\\b/],\n  tax: ['S.25.01', [['R0151']], /taux d.?impot|tax rate/],\n  dtl: ['S.25.01', [['R0152']], /impots differes passifs|\\bdtl\\b/],\n  mcrLin: ['S.28.01', [['R0010']], /lineaire|linear/],\n  amcr: ['S.28.01', [['R0330']], /amcr|plancher|absolute/],\n  mcrRep: ['S.28.01', [['R0400'], ['R0310']], /mcr/, /lineaire|linear|amcr|plancher|ratio|eligible|fonds propres/],\n  t1u: ['S.23.01', [['R0500', 'C0020'], ['R0020']], /non[- ]restreint|unrestricted/],\n  t1r: ['S.23.01', [['R0500', 'C0030'], ['R0030']], /restreint|restricted/, /non[- ]restreint|unrestricted/],\n  t2: ['S.23.01', [['R0500', 'C0040'], ['R0040']], /tier ?2/],\n  t3: ['S.23.01', [['R0500', 'C0050'], ['R0050']], /tier ?3/],\n  eofRep: ['S.23.01', [['R0540'], ['R0100']], /eligible/],\n};\n// Un code n'est accepté que si son libellé (quand il existe) est cohérent ; sinon recherche par libellé.\nconst resolve = (key) => {\n  const [t, rows, lab, exc] = SPEC[key];\n  const ok = (e) => (!lab || !e.label || lab.test(e.label)) && !(exc && e.label && exc.test(e.label));\n  const byCode = rows.flatMap(([r, c]) => entries.filter((e) => e.tpl === t && e.row === r && (!c || e.col === c)));\n  const good = byCode.find(ok);\n  if (good) return good;\n  const scan = (arr) => arr.find((e) => lab && e.label && lab.test(e.label) && !(exc && exc.test(e.label)));\n  const hit = scan(entries.filter((e) => e.tpl === t)) ?? scan(entries.filter((e) => !e.tpl));\n  if (hit) return hit;\n  if (byCode[0]) warn(`${key}: code ${byCode[0].code} ignoré, libellé incohérent « ${byCode[0].label} »`);\n  return null;\n};\nconst R = Object.fromEntries(Object.keys(SPEC).map((k) => [k, resolve(k)]));\n\n// ---------- 3. MATRICES DE CORRÉLATION (Règlement délégué 2015/35) ----------\nconst sym = (n, pairs) => {\n  const M = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)));\n  pairs.forEach(([i, j, v]) => { M[i][j] = v; M[j][i] = v; });\n  return M;\n};\nconst agg = (v, M) => Math.sqrt(Math.max(0, v.reduce((a, vi, i) => a + v.reduce((b, vj, j) => b + M[i][j] * vi * vj, 0), 0)));\nconst MKT_M = (A) => sym(6, [[0, 1, A], [0, 2, A], [0, 3, A], [0, 4, 0.25], [1, 2, 0.75], [1, 3, 0.75], [1, 4, 0.25], [2, 3, 0.5], [2, 4, 0.25], [3, 4, 0.25]]); // taux, actions, immo, spread, change, concentration\nconst LIFE_M = sym(7, [[0, 1, -0.25], [0, 2, 0.25], [0, 4, 0.25], [0, 6, 0.25], [1, 3, 0.25], [1, 4, 0.25], [1, 5, 0.25], [2, 4, 0.5], [2, 6, 0.25], [3, 4, 0.5], [3, 6, 0.25], [4, 5, 0.5], [4, 6, 0.25]]);\nconst HLTH_M = sym(3, [[0, 1, 0.5], [0, 2, 0.25], [1, 2, 0.25]]);\n// Non-vie : prime et réserve (0), résiliation (1), catastrophe (2) — 0,25 pour chaque paire (cf. Art. 114 RD 2015/35 ; lapse à confirmer sur le texte consolidé)\nconst NL_M = sym(3, [[0, 1, 0.25], [0, 2, 0.25], [1, 2, 0.25]]);\n// CORRECTIF : ordre des modules de MODS = marché (0), non-vie (1), vie (2), santé (3), défaut (4)\n// Annexe IV : marché/autres 0,25 ; défaut/non-vie 0,5 ; vie/non-vie 0 ; santé/non-vie 0 ; autres paires 0,25\nconst BSCR_M = sym(5, [\n  [0, 1, 0.25], [0, 2, 0.25], [0, 3, 0.25], [0, 4, 0.25],\n  [1, 2, 0], [1, 3, 0], [1, 4, 0.5],\n  [2, 3, 0.25], [2, 4, 0.25],\n  [3, 4, 0.25],\n]);\n\n// ---------- 4. CALCUL D'UNE BASE (net = après atténuation, brut = avant) ----------\nconst MODS = [\n  ['MKT', 'Risque de marché', 'repMkt', '#1E3A8A', 'Marché'],\n  ['NL', 'Souscription Non-Vie', 'repNl', '#2563EB', 'Souscription Non-Vie'],\n  ['LIFE', 'Souscription Vie', 'repLife', '#3B82F6', 'Vie'],\n  ['HLTH', 'Souscription Santé', 'repHlth', '#60A5FA', 'Santé'],\n  ['DEF', 'Défaut de contrepartie', 'repDef', '#64748B', 'Contrepartie'],\n];\nconst compute = (b) => {\n  const w = b === 'net' ? warn : () => {};\n  const A = (k) => amt(R[k], b);\n  const pos = (x) => Math.max(x ?? 0, 0);\n  const any = (a) => a.some((x) => x !== null);\n  const simple = (keys, M, ids, labels) => { const v = keys.map(A); if (!any(v)) return null; const vec = v.map(pos); return { total: agg(vec, M), vec, ids, labels }; };\n  const calc = {\n    MKT: () => {\n      const v = ['irUp', 'irDn', 'eq', 'prop', 'sp', 'fx', 'conc'].map(A);\n      if (!any(v)) return null;\n      const [u, d, eq, pr, sp, fx, cn] = v.map(pos);\n      const up = u >= d; // Art. 164 : A = 0 si choc à la hausse dominant, 0,5 si à la baisse\n      const vec = [up ? u : d, eq, pr, sp, fx, cn];\n      return { total: agg(vec, MKT_M(up ? 0 : 0.5)), vec, regime: up ? 'IR_UP (A=0.0)' : 'IR_DOWN (A=0.5)',\n        ids: ['IR', 'EQ', 'PROP', 'SP', 'FX', 'CONC'], labels: [`Taux d'intérêt (choc ${up ? 'haussier' : 'baissier'} retenu)`, 'Actions', 'Immobilier', 'Spread', 'Change', 'Concentration'] };\n    },\n    NL: () => simple(['n_pr', 'n_lapse', 'n_cat'], NL_M, ['PR', 'LAPSE', 'CAT'], ['Prime et réserve', 'Résiliation', 'Catastrophe']),\n    LIFE: () => simple(['l_mort', 'l_long', 'l_dis', 'l_lapse', 'l_exp', 'l_rev', 'l_cat'], LIFE_M, ['MORT', 'LONG', 'INV', 'LAPSE', 'EXP', 'REV', 'CAT'], ['Mortalité', 'Longévité', 'Invalidité / morbidité', 'Rachat', 'Frais', 'Révision des rentes', 'Catastrophe vie']),\n    HLTH: () => simple(['h_slt', 'h_nslt', 'h_cat'], HLTH_M, ['SLT', 'NSLT', 'CAT'], ['Santé similaire à la vie (SLT)', 'Santé non similaire à la vie (NSLT)', 'Catastrophe santé']),\n    DEF: () => { // NB : seuil de 15 % de l'Art. 189 non implémenté\n      const v = ['def1', 'def2'].map(A); if (!any(v)) return null;\n      const [t1, t2] = v.map(pos);\n      return { total: Math.sqrt(t1 * t1 + 1.5 * t1 * t2 + t2 * t2), vec: [t1, t2], ids: ['T1', 'T2'], labels: ['Type 1 (réassureurs, banques)', 'Type 2 (intermédiaires, assurés)'] };\n    },\n  };\n  const mods = {};\n  for (const [id, lib, rep] of MODS) {\n    const c = calc[id](), rp = A(rep);\n    mods[id] = c ? { ...c, source: 'sous-modules', reported: rp } : { total: pos(rp), vec: [], ids: [], labels: [], source: rp === null ? 'absent' : 'reporté', reported: rp };\n    if (!c && rp === null) w(`${lib} : aucune donnée (ni sous-modules ni S.25.01) → 0`);\n  }\n  const ids = MODS.map((m) => m[0]);\n  const vec = ids.map((i) => mods[i].total);\n  const core = agg(vec, BSCR_M);\n  const intang = pos(A('intang'));\n  const bscr = core + intang; // actifs incorporels ajoutés linéairement\n  const divers = core - vec.reduce((a, c) => a + c, 0);\n\n  let op = A('op'), opSrc = 'reporté';\n  if (op === null) {\n    const [pv, pn, bv, bn, fu] = ['prem_vie', 'prem_nv', 'be_vie', 'be_nv', 'frais_uc'].map(A);\n    if (any([pv, pn, bv, bn])) {\n      op = Math.min(0.3 * bscr, Math.max(0.04 * pos(pv) + 0.03 * pos(pn), 0.0045 * pos(bv) + 0.03 * pos(bn))) + 0.25 * pos(fu);\n      opSrc = 'calculé (simplifié)';\n      w('Risque opérationnel recalculé en version simplifiée (sans plafond de croissance ni détail UC)');\n    } else { op = 0; opSrc = 'absent'; w('Risque opérationnel absent (S.25.01 R0130) → 0'); }\n  }\n  op = pos(op);\n\n  let lacTp = A('lacTp'), lacTpSrc = 'reporté';\n  const fdb = A('fdb');\n  if (lacTp === null) {\n    if (fdb !== null && OPT.lacTpRate > 0) { lacTp = Math.min(fdb, OPT.lacTpRate * bscr); lacTpSrc = 'calculé (options.lacTpRate)'; }\n    else { lacTp = 0; lacTpSrc = 'absent'; if (fdb) w(`LAC TP absente alors que la PB future vaut ${r2(fdb)} M€ : fournir S.25.01 R0140 ou options.lacTpRate`); }\n  }\n  lacTp = -Math.abs(lacTp);\n  if (fdb !== null && -lacTp > fdb + 1e-9) w(`LAC TP (${r2(-lacTp)}) supérieure à la PB future (${r2(fdb)}) : à justifier`);\n\n  // CORRECTIF : taux d'impôt fourni en pourcentage (ex. 25 ou « 25 % ») → fraction\n  let tax = A('tax') ?? OPT.taxRate;\n  if (tax > 1) tax /= 100;\n  const dtl = A('dtl');\n  const dtCap = Math.min(dtl ?? Infinity, tax * Math.max(0, bscr + op + lacTp));\n  let lacDt = A('lacDt'), lacDtSrc = 'reporté';\n  if (lacDt === null) {\n    if (dtl !== null) { lacDt = dtCap; lacDtSrc = 'calculé = min(DTL, taux IS × (BSCR+Op+LAC TP))'; } else { lacDt = 0; lacDtSrc = 'absent'; }\n  } else if (Number.isFinite(dtCap) && Math.abs(lacDt) > dtCap + 1e-6) w(`LAC DT (${r2(Math.abs(lacDt))}) supérieure à la capacité DTL/taux IS (${r2(dtCap)}) : recouvrabilité à justifier`);\n  lacDt = -Math.abs(lacDt);\n  const adjCap = bscr + op; // l'ajustement total ne peut pas dépasser BSCR + Op\n  if (-lacTp > adjCap) { lacTp = -adjCap; w('LAC TP plafonnée à BSCR + Op'); }\n  if (-lacTp - lacDt > adjCap + 1e-9) { lacDt = -Math.max(0, adjCap + lacTp); w('LAC DT plafonnée : ajustement total > BSCR + Op'); }\n\n  const scr = Math.max(0, bscr + op + lacTp + lacDt);\n  return { mods, core, divers, intang, bscr, op, opSrc, lacTp, lacTpSrc, lacDt, lacDtSrc, scr };\n};\nconst N = compute('net'), B = compute('brut');\nconst scr = r2(N.scr);\n\n// ---------- 5. RÉCONCILIATION AVEC LES MONTANTS REPORTÉS ----------\nconst recon = [];\nconst cmp = (name, calc, rep) => {\n  if (rep === null || rep === undefined) return;\n  const d = calc - rep, pct = rep ? (d / Math.abs(rep)) * 100 : calc ? 100 : 0;\n  const ok = Math.abs(d) <= 0.05 || Math.abs(pct) <= OPT.tolerancePct;\n  recon.push({ Indicateur: name, 'Calculé (M€)': r2(calc), 'Reporté (M€)': r2(rep), 'Écart (M€)': r2(d), 'Écart (%)': r2(pct), Statut: ok ? 'OK' : 'ÉCART' });\n  if (!ok) warn(`Écart ${name} : calculé ${r2(calc)} vs reporté ${r2(rep)} M€ (${r2(pct)} %)`);\n};\nfor (const [id, lib] of MODS) if (N.mods[id].source === 'sous-modules') cmp(lib, N.mods[id].total, N.mods[id].reported);\ncmp('BSCR', N.bscr, amt(R.repBscr, 'net'));\nif (N.opSrc !== 'reporté') cmp('Risque opérationnel', N.op, amt(R.op, 'net'));\ncmp('SCR', N.scr, amt(R.repScr, 'net'));\n\n// ---------- 6. MCR ----------\nlet amcr = amt(R.amcr, 'net');\nif (amcr === null) { amcr = OPT.amcrDefault; warn(`AMCR absent : valeur par défaut ${amcr} M€ (à paramétrer selon le type d'organisme)`); }\nconst mcrLin = amt(R.mcrLin, 'net');\nlet mcr;\nif (mcrLin !== null) mcr = Math.max(Math.min(Math.max(mcrLin, 0.25 * N.scr), 0.45 * N.scr), amcr);\nelse mcr = amt(R.mcrRep, 'net') ?? Math.max(0.25 * N.scr, amcr);\nmcr = r2(mcr);\n\n// ---------- 7. FONDS PROPRES : classement et éligibilité (Art. 82) ----------\nconst [t1u, t1r, t2r, t3r] = ['t1u', 't1r', 't2', 't3'].map((k) => amt(R[k], 'net'));\nlet available, eligScr, eligMcr, tier1Ok = null, t1Elig = null, t2Elig = null, t3Elig = null;\nif ([t1u, t1r, t2r, t3r].some((x) => x !== null)) {\n  const u = t1u ?? 0, rr = t1r ?? 0, t2 = t2r ?? 0, t3 = t3r ?? 0;\n  available = u + rr + t2 + t3;\n  const rElig = Math.min(rr, 0.25 * u); // Tier 1 restreint <= 20 % du Tier 1 total\n  t1Elig = u + rElig;\n  const t2Avail = t2 + (rr - rElig); // excédent reclassé en Tier 2\n  t3Elig = Math.min(t3, 0.15 * N.scr);\n  t2Elig = Math.min(t2Avail, Math.max(0, 0.5 * N.scr - t3Elig)); // Tier 2 + Tier 3 <= 50 % du SCR\n  eligScr = t1Elig + t2Elig + t3Elig;\n  eligMcr = t1Elig + Math.min(t2Avail, 0.2 * mcr); // MCR : Tier 3 exclu, Tier 2 <= 20 %\n  tier1Ok = t1Elig >= 0.5 * N.scr;\n  if (!tier1Ok) warn('Tier 1 éligible inférieur à 50 % du SCR');\n  if (t1Elig < 0.8 * mcr) warn('Tier 1 éligible inférieur à 80 % du MCR');\n} else {\n  eligScr = amt(R.eofRep, 'net') ?? 0; available = eligScr; eligMcr = eligScr;\n  warn('Détail Tier 1/2/3 absent : fonds propres éligibles repris tels que reportés');\n}\nconst ratio = N.scr > 0 ? r2((eligScr / N.scr) * 100) : 0;\nconst mcrRatio = mcr > 0 ? r2((eligMcr / mcr) * 100) : 0;\nconst status = mcrRatio < 100 ? 'BREACH_MCR' : ratio < 100 ? 'BREACH_SCR' : ratio < OPT.watchlist ? 'WATCHLIST' : 'COMPLIANT';\n\n// ---------- 8. ARBRE « PIEUVRE » ----------\nconst tree = []; let ord = 0;\nconst add = (niv, code, parent, lib, b, n, color, ref = '') => tree.push({\n  Niveau: niv, Code_Noeud: code, Code_Parent: parent, 'Libellé': lib, 'Brut (M€)': r2(b), 'Net (M€)': r2(n), 'Effet mitigation (M€)': r2(n - b),\n  'Poids dans SCR (%)': N.scr ? r2((Math.abs(n) / N.scr) * 100) : 0, Ordre_Tentacule: ++ord, Couleur_Hex: color, Ref_EIOPA: ref });\nadd(0, 'SCR', '', 'SCR total', B.scr, N.scr, '#000000', 'S.25.01.R0200');\nadd(1, 'BSCR', 'SCR', 'BSCR (SCR de base)', B.bscr, N.bscr, '#1B2A41', 'S.25.01.R0100');\nadd(1, 'OP', 'SCR', 'Risque opérationnel', B.op, N.op, '#7F7F7F', 'S.25.01.R0130');\nadd(1, 'LAC_TP', 'SCR', \"Capacité d'absorption – provisions techniques\", B.lacTp, N.lacTp, '#17BECF', 'S.25.01.R0140');\nadd(1, 'LAC_DT', 'SCR', \"Capacité d'absorption – impôts différés\", B.lacDt, N.lacDt, '#BCBD22', 'S.25.01.R0150');\nfor (const [id, lib, , color] of MODS) {\n  const n = N.mods[id], b = B.mods[id];\n  add(2, id, 'BSCR', lib, b.total, n.total, color);\n  n.ids.forEach((c, i) => add(3, `${id}_${c}`, id, n.labels[i], b.vec[i] ?? n.vec[i], n.vec[i], color));\n  if (n.ids.length) add(3, `DIV_${id}`, id, `Diversification – ${lib}`, b.total - b.vec.reduce((a, c) => a + c, 0), n.total - n.vec.reduce((a, c) => a + c, 0), '#BFBFBF');\n}\nadd(2, 'INT', 'BSCR', 'Risque sur actifs incorporels', B.intang, N.intang, '#8C564B', 'S.25.01.R0070');\nadd(2, 'DIV_BSCR', 'BSCR', 'Diversification inter-modules', B.divers, N.divers, '#BFBFBF', 'S.25.01.R0060');\n\nconst S = (code, lib, b, n) => ({ 'Code EIOPA': code, Rubrique: lib, 'Brut (C0040)': r2(b), 'Net (C0030)': r2(n), 'Unité': 'M€' });\nconst s2501 = [\n  S('S.25.01-R0010', 'Risque de marché', B.mods.MKT.total, N.mods.MKT.total), S('S.25.01-R0020', 'Risque de défaut de contrepartie', B.mods.DEF.total, N.mods.DEF.total),\n  S('S.25.01-R0030', 'Risque de souscription Vie', B.mods.LIFE.total, N.mods.LIFE.total), S('S.25.01-R0040', 'Risque de souscription Santé', B.mods.HLTH.total, N.mods.HLTH.total),\n  S('S.25.01-R0050', 'Risque de souscription Non-Vie', B.mods.NL.total, N.mods.NL.total), S('S.25.01-R0060', 'Diversification', B.divers, N.divers),\n  S('S.25.01-R0070', 'Risque sur actifs incorporels', B.intang, N.intang), S('S.25.01-R0100', 'SCR de base (BSCR)', B.bscr, N.bscr),\n  S('S.25.01-R0130', 'Risque opérationnel', B.op, N.op), S('S.25.01-R0140', 'Absorption par les provisions techniques', B.lacTp, N.lacTp),\n  S('S.25.01-R0150', 'Absorption par les impôts différés', B.lacDt, N.lacDt), S('S.25.01-R0200', 'SCR', B.scr, N.scr),\n];\nconst F = (code, lib, v, u = 'M€') => ({ 'Code EIOPA': code, Rubrique: lib, Valeur: r2(v), 'Unité': u });\nconst fonds = [\n  F('S.23.01-R0020', 'Tier 1 non restreint', t1u ?? 0), F('S.23.01-R0030', 'Tier 1 restreint', t1r ?? 0), F('S.23.01-R0040', 'Tier 2', t2r ?? 0), F('S.23.01-R0050', 'Tier 3', t3r ?? 0),\n  F('S.23.01-R0060', 'Fonds propres disponibles', available), F('S.23.01-R0100', 'Fonds propres éligibles (SCR)', eligScr),\n  F('S.28.01-R0310', 'MCR retenu', mcr), F('S.28.01-R0340', 'Fonds propres éligibles (MCR)', eligMcr),\n  F('RATIO', 'Ratio de couverture SCR', ratio, '%'), F('RATIO', 'Ratio de couverture MCR', mcrRatio, '%'),\n];\nconst synthese = [\n  { Indicateur: 'SCR', Valeur: scr, 'Unité': 'M€' }, { Indicateur: 'BSCR', Valeur: r2(N.bscr), 'Unité': 'M€' }, { Indicateur: 'Diversification', Valeur: r2(N.divers), 'Unité': 'M€' },\n  { Indicateur: 'Risque opérationnel', Valeur: r2(N.op), 'Unité': 'M€' }, { Indicateur: 'LAC TP', Valeur: r2(N.lacTp), 'Unité': 'M€' }, { Indicateur: 'LAC DT', Valeur: r2(N.lacDt), 'Unité': 'M€' },\n  { Indicateur: 'Fonds propres éligibles', Valeur: r2(eligScr), 'Unité': 'M€' }, { Indicateur: 'Ratio SCR', Valeur: ratio, 'Unité': '%' },\n  { Indicateur: 'MCR', Valeur: mcr, 'Unité': 'M€' }, { Indicateur: 'Ratio MCR', Valeur: mcrRatio, 'Unité': '%' }, { Indicateur: 'Statut', Valeur: status, 'Unité': '' },\n];\nconst sheets = { Synthese: synthese, Pieuvre_SCR: tree, S2501_SCR: s2501, Fonds_Propres_Ratios: fonds,\n  Controles: [...recon, ...warnings.map((m) => ({ Indicateur: 'Alerte', Message: m }))] };\n\nconst json = {\n  eligibleFunds: r2(eligScr), scr, mcr, ratio,\n  modules: MODS.map(([id, , , color, name]) => ({ name, value: r2(N.mods[id].total), color })),\n  details: {\n    marketRegime: N.mods.MKT.regime ?? 'n/a', bscr: r2(N.bscr), diversificationBenefit: r2(N.divers), intangibles: r2(N.intang),\n    operationalRisk: r2(N.op), lacTp: r2(N.lacTp), lacDt: r2(N.lacDt), totalAdjustment: r2(N.lacTp + N.lacDt),\n    availableOwnFunds: r2(available), tieringHaircut: r2(available - eligScr), eligibleFundsMcr: r2(eligMcr), mcrRatio, tier1Compliant: tier1Ok,\n    sources: { op: N.opSrc, lacTp: N.lacTpSrc, lacDt: N.lacDtSrc, modules: Object.fromEntries(MODS.map(([id]) => [id, N.mods[id].source])) },\n    regulatoryStatus: status,\n  },\n  tree, sheets, quality: { warnings, reconciliation: recon, engine: 'v2.2' }, status: 'live',\n};\n\n// ---------- 9. EXPORT EXCEL OPTIONNEL (nécessite NODE_FUNCTION_ALLOW_EXTERNAL=xlsx) ----------\nconst out = { json };\nif (OPT.exportXlsx) {\n  try {\n    const XLSX = require('xlsx');\n    const wb = XLSX.utils.book_new();\n    for (const [name, rows] of Object.entries(sheets)) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ Info: 'vide' }]), name.slice(0, 31));\n    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });\n    out.binary = { data: await this.helpers.prepareBinaryData(buf, `Resultats_SCR_${payload.periode ?? 'export'}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') };\n  } catch (e) {\n    json.quality.warnings.push(`Export XLSX natif indisponible (${String(e.message).slice(0, 80)}) : utiliser le noeud « Convert to File » sur json.sheets`);\n  }\n}\nreturn [out];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        16
+      ],
+      "id": "64a3be09-fbea-4114-ab16-c4f31602ad55",
+      "name": "Moteur SCR v2.2",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        208,
+        0
+      ],
+      "id": "a4bc1e05-5561-46cd-ad6e-c0001eb16545",
+      "name": "Réponse SCR"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'error', message: String($json.error?.message ?? $json.error ?? 'Erreur du moteur SCR') } }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        208,
+        176
+      ],
+      "id": "b77bcb6d-9e40-4183-b46f-306674690820",
+      "name": "Erreur SCR (422)"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "report-pdf",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -240,
+        400
+      ],
+      "id": "bfcb6d45-cc18-4212-a76e-aea126b20ca9",
+      "name": "Webhook Report PDF",
+      "webhookId": "10608609-beb9-4f40-be71-0145e2cc4204"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://report-pdf:8002/report",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -16,
+        400
+      ],
+      "id": "38c51a3e-f9b3-4c5e-9f91-75708303ed09",
+      "name": "Python PDF Generator",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "set",
+        "inputFieldName": "data",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/pdf"
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "attachment; filename=\"Rapport_Audit_SolvaRisk.pdf\""
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        208,
+        384
+      ],
+      "id": "349b9063-de7a-42fd-9561-22574b1e807f",
+      "name": "Réponse PDF"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'error', message: String($json.error?.message ?? $json.error ?? 'Le service PDF est indisponible') } }}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        208,
+        560
+      ],
+      "id": "985f22ca-30a4-43a9-a73f-8db53d2827a0",
+      "name": "Erreur PDF (502)"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "notify",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -240,
+        800
+      ],
+      "id": "c9493e7a-878c-42ba-ae5a-2194bb28d117",
+      "name": "Webhook Notification",
+      "webhookId": "81a40ade-c19d-4b3e-85f3-9cddfb45d5d4"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.type }}",
+                    "rightValue": "alert",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "14bd4c84-cebc-4a5b-8866-409fd25d5cf5"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "id": "74dea574-d379-4c81-b421-342a27878242",
+                    "leftValue": "={{ $json.body.type }}",
+                    "rightValue": "report_ready",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.5,
+      "position": [
+        -16,
+        800
+      ],
+      "id": "2db81da3-36d5-4598-8495-d194e49541f8",
+      "name": "Type de notification"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// The webhook is open: only addresses of these domains are accepted, otherwise the default recipient is used\nconst ALLOWED_DOMAINS = ['esprit.tn'];\nconst DEFAULT_RECIPIENT = 'ahmed.tounsi@esprit.tn';\nconst body = $json.body ?? $json;\nconst d = body.details ?? {};\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst fix = (v, n = 2) => (v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v)) ? Number(v).toFixed(n) : 'N/A');\nconst wanted = String(body.recipient ?? '').trim().toLowerCase();\nconst recipient = /^[^@\\s]+@[^@\\s]+$/.test(wanted) && ALLOWED_DOMAINS.includes(wanted.split('@')[1]) ? wanted : DEFAULT_RECIPIENT;\nconst subject = String(body.subject ?? '').replace(/[\\r\\n]+/g, ' ').trim().slice(0, 150);\nconst row = (label, value) => '<li><strong>' + label + ' :</strong> ' + value + '</li>';\nconst footer = '<p style=\"margin-top:20px;font-size:12px;color:#718096;\">Notification générée automatiquement par le pipeline SolvaRisk.</p>';\nconst items = [\n  row('Statut qualité des données', esc(d.quality_status ?? 'N/A') + (d.quality_score !== undefined ? ' (score ' + fix(d.quality_score, 1) + '/100)' : '')),\n  row('Anomalies bloquantes', esc(d.critical_count ?? 0)),\n  row('Ratio de solvabilité', d.ratio !== undefined ? fix(d.ratio) + ' %' : 'N/A'),\n  d.severity ? row('Gravité du diagnostic', esc(d.severity)) : '',\n].join('');\nconst summary = d.summary ? '<p><em>' + esc(String(d.summary).slice(0, 600)) + '</em></p>' : '';\nconst action = d.recommended_action ? '<p><strong>Action recommandée :</strong> ' + esc(String(d.recommended_action).slice(0, 400)) + '</p>' : '';\nconst html = '<div style=\"font-family:Arial,sans-serif;color:#222;\"><h2 style=\"color:#c53030;\">Alerte Solvabilité II &ndash; Anomalie détectée</h2><p>Une anomalie critique nécessite votre attention immédiate :</p><ul>' + items + '</ul>' + summary + action + footer + '</div>';\nreturn { json: { recipient, subject: '[SolvaRisk – ALERTE] ' + (subject || 'Incident critique'), html } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        272,
+        720
+      ],
+      "id": "91ebaec4-ff85-4d3f-a642-f6d111716ca5",
+      "name": "Mail – alerte"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// The webhook is open: only addresses of these domains are accepted, otherwise the default recipient is used\nconst ALLOWED_DOMAINS = ['esprit.tn'];\nconst DEFAULT_RECIPIENT = 'ahmed.tounsi@esprit.tn';\nconst body = $json.body ?? $json;\nconst d = body.details ?? {};\nconst esc = (v) => String(v ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst fix = (v, n = 2) => (v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v)) ? Number(v).toFixed(n) : 'N/A');\nconst wanted = String(body.recipient ?? '').trim().toLowerCase();\nconst recipient = /^[^@\\s]+@[^@\\s]+$/.test(wanted) && ALLOWED_DOMAINS.includes(wanted.split('@')[1]) ? wanted : DEFAULT_RECIPIENT;\nconst subject = String(body.subject ?? '').replace(/[\\r\\n]+/g, ' ').trim().slice(0, 150);\nconst row = (label, value) => '<li><strong>' + label + ' :</strong> ' + value + '</li>';\nconst footer = '<p style=\"margin-top:20px;font-size:12px;color:#718096;\">Notification générée automatiquement par le pipeline SolvaRisk.</p>';\nconst items = [\n  row('Ratio de solvabilité', d.ratio !== undefined ? fix(d.ratio) + ' %' : 'N/A'),\n  row('SCR', d.scr !== undefined ? fix(d.scr) + ' M€' : 'N/A'),\n  row('Fonds propres éligibles', d.eligible_funds !== undefined ? fix(d.eligible_funds) + ' M€' : 'N/A'),\n  row('MCR', d.mcr !== undefined ? fix(d.mcr) + ' M€' : 'N/A'),\n  d.severity ? row('Gravité du diagnostic', esc(d.severity)) : '',\n  d.report_name ? row('Rapport', esc(d.report_name)) : '',\n].join('');\nconst html = '<div style=\"font-family:Arial,sans-serif;color:#222;\"><h2 style=\"color:#1e3a8a;\">Rapport d&rsquo;audit SCR prêt</h2><p>Le rapport PDF a été généré et est disponible dans SolvaRisk.</p><ul>' + items + '</ul>' + footer + '</div>';\nreturn { json: { recipient, subject: '[SolvaRisk] ' + (subject || \"Rapport d'audit SCR prêt\"), html } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        272,
+        880
+      ],
+      "id": "001c2e74-926e-4363-8cb4-765274812822",
+      "name": "Mail – rapport prêt"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        272,
+        1040
+      ],
+      "id": "40f639f0-4418-4cba-9d03-e294f6e50aef",
+      "name": "Type inconnu (ignoré)"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.recipient }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        496,
+        800
+      ],
+      "id": "e7f0d13f-dfb3-46f7-9e46-ff3bf6c2c148",
+      "name": "Send Email",
+      "webhookId": "eb29edae-042b-4116-9c9e-9e6a0b71f684",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "MBEs6wN8MzViUCZY",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "width": 600,
+        "height": 320,
+        "content": "## SolvaRisk – webhooks utilisés par l'application\n**POST /webhook/scr-agent** : corps `{ sheets | data }` -> moteur SCR (JSON). Erreur -> 422 `{status:'error'}`.\n**POST /webhook/report-pdf** : corps `{ scrData, analystData }` -> PDF (binaire) généré par le conteneur `report-pdf:8002`. Erreur -> 502.\n**POST /webhook/notify** : corps `{ type: 'alert' | 'report_ready', recipient?, subject?, details }` -> répond tout de suite puis envoie un e-mail Gmail.\nDestinataires acceptés : domaine esprit.tn, sinon destinataire par défaut (voir les nœuds « Mail »).\n\nPré-requis : le conteneur `n8n` doit être sur le réseau Docker `solva-net` (docker network connect solva-net n8n)."
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        -300
+      ],
+      "id": "0e67f47c-ec23-4b42-bd6f-624ebe20ee20",
+      "name": "Notes"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook scr": {
+      "main": [
+        [
+          {
+            "node": "Moteur SCR v2.2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Moteur SCR v2.2": {
+      "main": [
+        [
+          {
+            "node": "Réponse SCR",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Erreur SCR (422)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Report PDF": {
+      "main": [
+        [
+          {
+            "node": "Python PDF Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Python PDF Generator": {
+      "main": [
+        [
+          {
+            "node": "Réponse PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Erreur PDF (502)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Notification": {
+      "main": [
+        [
+          {
+            "node": "Type de notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Type de notification": {
+      "main": [
+        [
+          {
+            "node": "Mail – alerte",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mail – rapport prêt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Type inconnu (ignoré)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mail – alerte": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mail – rapport prêt": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

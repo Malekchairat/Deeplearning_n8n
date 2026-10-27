@@ -1,0 +1,5 @@
+﻿
+
+A. lignes + phrases, 1100/200 (production) 96 chunks {'dense': 0.75, 'bm25': 0.531, 'hybrid': 0.679, 'hybrid_rerank': 1.0} 399s
+B. lignes + phrases, 400/80 (petits chunks) 236 chunks {'dense': 0.647, 'bm25': 0.583, 'hybrid': 0.744, 'hybrid_rerank': 0.923} 566s
+C. une page = un chunk (structure du document) 191 chunks {'dense': 0.659, 'bm25': 0.564, 'hybrid': 0.872, 'hybrid_rerank': 0.885} 875s

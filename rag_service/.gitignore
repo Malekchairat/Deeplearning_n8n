@@ -1,0 +1,7 @@
+.env
+.venv/
+chroma_db_v2/
+__pycache__/
+generated/
+climate_agent/*.db
+climate_agent/cache/

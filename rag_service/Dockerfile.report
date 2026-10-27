@@ -1,0 +1,7 @@
+FROM python:3.13-slim
+WORKDIR /app
+COPY requirements-report.txt .
+RUN pip install --no-cache-dir -r requirements-report.txt
+COPY report_generator.py report_app.py ./
+EXPOSE 8002
+CMD ["uvicorn", "report_app:app", "--host", "0.0.0.0", "--port", "8002"]

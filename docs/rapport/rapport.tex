@@ -1,0 +1,212 @@
+% Compiler avec XeLaTeX :  xelatex rapport.tex  (deux passes)
+\documentclass[11pt,a4paper]{article}
+\usepackage{fontspec}
+\usepackage[a4paper,top=2.1cm,bottom=2cm,left=2.2cm,right=2.2cm]{geometry}
+\usepackage[french]{babel}
+\usepackage{booktabs,tabularx,xcolor,tikz,enumitem,microtype,titlesec,fancyhdr,array,listings,hyperref}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit}
+\setmainfont{Latin Modern Roman}
+\definecolor{acc}{HTML}{1F4E79}
+\definecolor{soft}{HTML}{EAF1F8}
+\hypersetup{colorlinks=true,linkcolor=acc,urlcolor=acc}
+\titleformat{\section}{\large\bfseries\color{acc}}{\thesection}{.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{.5em}{}
+\titlespacing*{\section}{0pt}{8pt}{3pt}
+\titlespacing*{\subsection}{0pt}{5pt}{2pt}
+\setlist{nosep,leftmargin=1.2em,itemsep=1pt}
+\setlength{\parskip}{4pt}\setlength{\parindent}{0pt}\linespread{1.04}
+\pagestyle{fancy}\fancyhf{}\renewcommand{\headrulewidth}{0pt}
+\fancyfoot[C]{\footnotesize SolvaRisk --- rapport technique --- page \thepage}
+\newcommand{\code}[1]{\texttt{\small #1}}
+\lstset{basicstyle=\ttfamily\scriptsize,breaklines=true,frame=single,framerule=.3pt,rulecolor=\color{acc!40},backgroundcolor=\color{soft},xleftmargin=2pt,xrightmargin=2pt}
+
+\begin{document}
+\begin{center}
+{\LARGE\bfseries\color{acc} SolvaRisk --- Automatisation IA pour Solvabilit\'e~II}\\[3pt]
+{\large Rapport technique --- Advanced Deep Learning, projet final \emph{AI Automation} (5DS, Esprit 2026-2027)}\\[2pt]
+\small \'Equipe SolvaRisk\quad|\quad d\'epôt~: \code{Solva/}\quad|\quad biblioth\`eque de prompts~: \code{docs/prompt\_library.md}\quad|\quad \'evaluation du retrieval~: \code{rag\_service/eval/}
+\end{center}
+
+\section{Cas d'usage et vue d'ensemble}
+\textbf{Probl\`eme.} Un organisme d'assurance soumis \`a Solvabilit\'e~II doit produire chaque trimestre ses \'etats r\'eglementaires (QRT), calculer son capital de solvabilit\'e requis (SCR) et son ratio de couverture, auditer la qualit\'e des donn\'ees, r\'ediger un diagnostic ORSA et v\'erifier des r\`egles r\'eglementaires. Le travail est r\'ep\'etitif, chiffr\'e, et une erreur de chiffre est inacceptable~: c'est l'argument central de nos choix d'architecture (\emph{le mod\`ele de langage ne calcule rien}).
+
+\textbf{Syst\`eme.} SolvaRisk est une application Next.js reli\'ee \`a un service Python (FastAPI) et \`a un workflow n8n. Elle propose cinq usages~: (1) import d'un QRT (Excel ou PDF), audit, calcul du SCR, diagnostic de l'analyste et rapport PDF en un clic~; (2) un copilote RAG sur le corpus r\'eglementaire~; (3) un agent \og Expert EIOPA \& QRT\fg{} qui v\'erifie les limites de fonds propres et g\'en\`ere un Excel QRT~; (4) un agent \og Climate \& ESG\fg{} (test de r\'esistance ORSA aux inondations)~; (5) l'historique des rapports.
+
+\begin{figure}[h]\centering
+\begin{tikzpicture}[font=\scriptsize,node distance=4mm and 6mm,
+ box/.style={draw=acc,fill=soft,rounded corners=2pt,align=center,minimum height=7mm,inner sep=2.5pt},
+ det/.style={box,fill=white,dashed},
+ arr/.style={-{Stealth[length=1.8mm]},acc,thick}]
+\node[box] (ui) {Interface Next.js\\import Excel/PDF, onglets};
+\node[box,right=of ui,xshift=6mm] (n8n) {n8n (Docker)\\webhooks \code{scr}, \code{report-pdf},\\\code{notify}};
+\node[det,right=of n8n,xshift=2mm] (eng) {Moteur SCR v2.2\\(JavaScript, d\'eterministe)};
+\node[box,below=7mm of ui] (api) {Service FastAPI\\(\code{rag\_service/})};
+\node[box,right=of api] (lg) {Pipeline LangGraph\\audit $\to$ analyste};
+\node[box,right=of lg] (ag) {Agents \`a outils\\EIOPA, Climat};
+\node[box,right=of ag] (rag) {RAG hybride\\Chroma+BM25+reranker};
+\node[det,below=6mm of lg,xshift=-16mm] (pdf) {Extraction PDF\\tableaux + vision};
+\node[det,right=of pdf] (rep) {Rapport PDF\\(xhtml2pdf, matplotlib)};
+\node[det,right=of rep] (meteo) {Open-Meteo\\(climat, crues)};
+\draw[arr] (ui)--(n8n); \draw[arr] (n8n)--(eng); \draw[arr] (ui)--(api);
+\draw[arr] (api)--(lg); \draw[arr] (lg)--(ag); \draw[arr] (ag)--(rag);
+\draw[arr] (api)--(pdf); \draw[arr] (n8n) to[bend left=12] (rep); \draw[arr] (ag)--(meteo);
+\end{tikzpicture}
+\caption{Architecture. Cadres pleins~: composants \`a LLM ou \`a orchestration~; cadres en pointill\'es~: composants d\'eterministes.}
+\end{figure}
+
+\section{Plateforme d'automatisation (n8n) --- ce qui tourne o\`u}
+Le workflow n8n export\'e (\code{n8n/solvarisk-workflow.json}, 15 n\oe uds, g\'en\'er\'e par \code{build-workflow.cjs}) expose trois webhooks~: \code{scr} (n\oe ud Code \og Moteur SCR v2.2\fg{}~: agr\'egation par matrices de corr\'elation, diversification, absorption par les provisions techniques et impôts diff\'er\'es, \'eligibilit\'e des fonds propres par Tier, contr\^oles de coh\'erence), \code{report-pdf} (appel du conteneur Python \code{report-pdf} qui rend le PDF) et \code{notify} (n\oe ud Switch puis Gmail pour les alertes et l'avis de rapport pr\^et). Le moteur SCR est volontairement un n\oe ud de code d\'eterministe~: la plateforme affiche \emph{exactement} sa sortie.
+
+\begin{table}[h]\centering\small
+\begin{tabularx}{\textwidth}{@{}p{2.5cm}p{3.3cm}X@{}}\toprule
+\textbf{Webhook} & \textbf{N\oe uds} & \textbf{Comportement}\\\midrule
+\code{scr} & Webhook $\to$ Moteur SCR v2.2 $\to$ R\'eponse (ou Erreur 422) & valide les feuilles QRT, calcule SCR, MCR, ratio, diversification, \'eligibilit\'e par Tier, contr\^oles de coh\'erence~; erreur 422 explicite si une entr\'ee manque\\
+\code{report-pdf} & Webhook $\to$ Python PDF Generator $\to$ R\'eponse (ou Erreur 502) & transmet le diagnostic au conteneur \code{report-pdf} (port 8002) et renvoie le PDF binaire\\
+\code{notify} & Webhook $\to$ Switch $\to$ Mail alerte / Mail rapport $\to$ Gmail & e-mail d'alerte ou avis de rapport pr\^et~; type inconnu ignor\'e sans erreur\\\bottomrule
+\end{tabularx}
+\caption{Les trois flux du workflow n8n export\'e.}
+\end{table}
+\textbf{\'Ecart assum\'e par rapport \`a l'exigence 1.} La cascade \og Calculer $\to$ SCR $\to$ analyste $\to$ rapport PDF $\to$ notification\fg{} est d\'eclench\'ee de bout en bout par un seul clic, mais son orchestration est port\'ee par l'application et le service FastAPI (graphe LangGraph), pas par un unique workflow n8n~; n8n porte le calcul SCR, la g\'en\'eration du rapport et la notification. Nous l'assumons~: le premier essai d'agents LLM dans n8n a \'echou\'e (voir \S\ref{sec:echecs}) et le graphe Python est testable hors ligne. Une version o\`u n8n appelle \code{/api/pipeline/audit-and-risk} comme un n\oe ud HTTP est la suite naturelle.
+
+\section{Ing\'enierie de prompts}
+La biblioth\`eque versionn\'ee (\code{docs/prompt\_library.md}, 7 prompts) documente pour chacun le r\^ole, la technique, les \'echecs observ\'es et le correctif. Techniques utilis\'ees~: \emph{role prompting} (actuaire senior), \emph{sortie structur\'ee} (sch\'emas Pydantic, \code{response\_schema} Gemini), \emph{grounding avec citations} (\code{[n]} et refus litt\'eral), \emph{agent \`a outils} (proc\'edure obligatoire), \emph{garde-fous} (v\'erification en code de ce que le mod\`ele d\'eclare).
+
+\begin{table}[h]\centering\small
+\begin{tabularx}{\textwidth}{@{}p{2.1cm}Xp{4.6cm}@{}}\toprule
+\textbf{Prompt} & \textbf{\'Echec observ\'e (avant)} & \textbf{Correctif (apr\`es)}\\\midrule
+Analyste (P3) & Fran\c{c}ais d\'egrad\'e~: apostrophes et accents supprim\'es & r\`egle 7 + nouvel essai si texte d\'egrad\'e + r\'eparation des \'elisions en code\\
+Analyste (P3) & PDF de synth\`ese~: SCR recalcul\'e faux (10\,075,96) au lieu des chiffres publi\'es & r\`egle 9 + mode \og synth\`ese\fg{} + garde en code\\
+Analyste (P3) & Conseil g\'en\'erique \og am\'eliorer la qualit\'e des donn\'ees\fg{} & r\`egle 6~: citer les constats pr\'ecis de l'audit\\
+Agent EIOPA (P6) & \og R\`egle confirm\'ee\fg{} d\'eduite d'un score de recherche (un passage sur le SCR \og confirmait\fg{} une limite de Tier) & le mod\`ele \emph{d\'eclare} \code{rule\_confirmed}+preuves, le code les v\'erifie (pertinence $\geq 0{,}30$)\\
+Agent EIOPA (P6) & \og \'ECART\fg{} affich\'e pour un plafond d\'epass\'e (fausse infraction) & statut \textsc{plafonn\'e} d\'efini dans le prompt\\
+Agent EIOPA (P6) & 372,085 arrondi \`a 372,08 (le moteur n8n donne 372,09) & arrondi \og demi vers le haut\fg{} identique \`a \code{Math.round}\\\bottomrule
+\end{tabularx}
+\caption{Extrait des it\'erations avant/apr\`es (d\'etail complet dans la biblioth\`eque).}
+\end{table}
+\begin{table}[h]\centering\small
+\begin{tabularx}{\textwidth}{@{}llXr@{}}\toprule
+\textbf{ID} & \textbf{Prompt} & \textbf{Technique} & \textbf{Version}\\\midrule
+P1 & R\'e\'ecriture de la question (RAG) & sortie JSON, acronymes d\'evelopp\'es & v1\\
+P2 & R\'eponse cit\'ee (RAG) & grounding, citations \code{[n]}, refus litt\'eral & v1\\
+P3 & Analyste de risques & r\^ole, 9 r\`egles, sortie structur\'ee, garde-fous en code & v3\\
+P4 & Extraction PDF par vision & sortie structur\'ee, \og \code{null} plut\^ot que deviner\fg{} & v1\\
+P5 & Extraction d'un PDF de synth\`ese & sortie structur\'ee, p\'erim\`etre explicite & v2\\
+P6 & Agent Expert EIOPA \& QRT & agent \`a outils, proc\'edure obligatoire, honn\^etet\'e & v3\\
+P7 & Agent Climate \& ESG & agent \`a outils, chiffres interdits au mod\`ele & v1.1\\\bottomrule
+\end{tabularx}
+\caption{Les sept prompts de la biblioth\`eque et leur version courante.}
+\end{table}
+\textbf{Exemple d\'etaill\'e d'it\'eration (P6, confirmation de r\`egle).} L'agent EIOPA devait dire si la base documentaire \emph{confirme} les limites de Tier. En v1, le champ reposait sur le score de recherche~: un passage sur le SCR en g\'en\'eral, bien class\'e, suffisait \`a afficher \og r\`egle confirm\'ee\fg. En v2, la responsabilit\'e est partag\'ee~:
+\begin{lstlisting}
+- Prompt   : "Un passage ne confirme une regle que s'il l'ENONCE (les seuils eux-memes) ... declare ton jugement dans
+              check_tier_limits (rule_confirmed, evidence_ids) ; s'il est negatif, ecris : regle non confirmee par la base."
+- Code     : rule_confirmed = declare ET au moins un evidence_id existe parmi les passages retrouves avec pertinence >= 0,30
+- Resultat : si aucun passage ne fournit les seuils (cas du corpus actuel, sans les regles de Tier) -> rule_confirmed = false
+\end{lstlisting}
+Le principe, repris dans tous les agents~: \emph{ce que le mod\`ele affirme est v\'erifi\'e par le code avant d'\^etre affich\'e comme un fait}.
+
+\textbf{Ce qui n'a pas \'et\'e it\'er\'e.} Les prompts RAG (r\'e\'ecriture, r\'eponse), d'extraction par vision et de l'agent climat sont en v1~: nous n'avons pas observ\'e d'\'echec qui justifie une it\'eration, et nous n'avons pas mesur\'e l'apport de la r\'e\'ecriture de requ\^ete. La biblioth\`eque le dit explicitement.
+
+\section{RAG : corpus, d\'ecoupage, retrieval, \'evaluation}
+\subsection{Corpus}
+Trois documents de cours en PDF, en fran\c{c}ais~: \emph{Solvabilit\'e~2 version courte} (12 p.), \emph{Pilier~1 et ORSA} (73 p.) et \emph{Formation Solvabilit\'e~2 -- IRA} (106 p.), soit 191 pages et environ 73\,000 caract\`eres de texte extrait. Choix~: ils couvrent exactement le p\'erim\`etre du projet (piliers, SCR, MCR, marge de risque, ORSA, QRT) et sont la r\'ef\'erence des \'etudiants. \textbf{Limites constat\'ees}~: (i) la formation IRA est en grande partie compos\'ee de diapositives-images (106 pages pour 25\,600 caract\`eres)~: le texte est absent, une OCR serait n\'ecessaire~; (ii) le corpus ne contient \emph{pas} les r\`egles de classement par Tier (r\`eglement d\'el\'egu\'e 2015/35)~: l'agent EIOPA r\'epond alors \og r\`egle non confirm\'ee par la base documentaire\fg{} au lieu d'inventer~; (iii) la diapositive 81 de la formation donne un ratio de couverture invers\'e (SCR / fonds propres) que le RAG reproduirait fid\`element.
+
+\subsection{D\'ecoupage, embeddings, index}
+\textbf{Strat\'egie de production} (\code{build\_chunks})~: d\'ecoupage par \emph{lignes puis phrases}, taille cible 1\,100 caract\`eres, recouvrement 200 (environ 18\,\%), coupure forc\'ee au changement de page lorsque le chunk est rempli \`a moiti\'e. Justification~: 1\,100 caract\`eres $\approx$ 250--300 jetons, sous la limite de 512 jetons de l'encodeur~; les diapositives sont des listes courtes qu'il faut regrouper sans couper une formule~; le recouvrement \'evite de s\'eparer une d\'efinition de son exemple. R\'esultat~: 96 chunks (7 + 53 + 36). Chaque chunk est index\'e avec son titre de document et ses pages.\\
+\textbf{Embeddings}~: \code{multilingual-e5-base} (multilingue, fran\c{c}ais, pr\'efixes \code{query:}/\code{passage:}). \textbf{Magasin}~: ChromaDB persistant, distance cosinus (HNSW), index incr\'emental par empreinte de fichier.\\
+\textbf{Retrieval}~: recherche dense + BM25 (tokenisation sans accents, mots vides et pluriels retir\'es), fusion \emph{Reciprocal Rank Fusion} ($k=60$, 30 candidats, 20 fusionn\'es), reranking par \code{bge-reranker-v2-m3}, top-5, seuil de refus 0,05. La requ\^ete est d'abord r\'e\'ecrite par le LLM (forme autonome + 2 variantes avec acronymes d\'evelopp\'es). Sous le seuil, le LLM n'est pas appel\'e.
+
+\subsection{\'Evaluation du retrieval et comparaison de d\'ecoupages}
+Protocole (\code{rag\_service/eval/retrieval\_eval.py}, reproductible)~: 13 questions dont la r\'eponse est dans le corpus et 2 hors corpus~; v\'erit\'e terrain = page(s) du PDF contenant la r\'eponse, lue \`a la main (ind\'ependante du d\'ecoupage)~; un passage est pertinent s'il est du bon document et recoupe les pages attendues~; requ\^etes brutes, sans r\'e\'ecriture LLM. Trois d\'ecoupages sont compar\'es~: A (production, 1\,100/200), B (petits chunks 400/80), C (une page = un chunk, structure du document), chacun en quatre modes (dense, BM25, hybride, hybride + reranker).
+\input{rag_tables.tex}
+\input{rag_discussion.tex}
+
+\section{Architecture multi-agents}
+\subsection{Agents, outils, flux d'information}
+\begin{table}[h]\centering\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.5cm}>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{3.2cm}@{}}\toprule
+\textbf{Agent} & \textbf{Nature} & \textbf{Outils / sortie} & \textbf{Entr\'ee $\to$ sortie}\\\midrule
+Audit qualit\'e & r\`egles d\'eterministes (pas de LLM) & contr\^oles de compl\'etude, coh\'erence, doublons~; statut \textsc{passed/warning/blocked} & positions $\to$ rapport d'audit\\
+Analyste de risques & LLM (Gemini), sortie structur\'ee & indicateurs pr\'ecalcul\'es en code~; diagnostic, ORSA, att\'enuation, garde-fous & SCR + audit $\to$ diagnostic\\
+Moteur SCR & n\oe ud JS n8n, d\'eterministe & matrices de corr\'elation, \'eligibilit\'e Tier & feuilles QRT $\to$ SCR, ratio\\
+Expert EIOPA \& QRT & LLM \`a outils (ReAct) & \code{search\_eiopa\_vector\_db} (RAG), \code{get\_own\_funds\_portfolio}, \code{check\_tier\_limits}, \code{generate\_excel\_qrt} & question + fonds propres $\to$ verdict, sources, Excel\\
+Climate \& ESG & LLM \`a outils (ReAct) & \code{query\_portfolio\_database} (SQL lecture seule), \code{fetch\_geospatial\_weather\_api} (Open-Meteo), \code{compute\_climate\_stress} & question + SCR Non-Vie $\to$ \% menac\'e\\
+Copilote & RAG (\S4) & r\'e\'ecriture, retrieval hybride, r\'eponse cit\'ee & question $\to$ r\'eponse + sources\\\bottomrule
+\end{tabularx}
+\caption{Les agents, leurs outils et leur r\^ole.}
+\end{table}
+\textbf{Pipeline s\'equentiel \`a branchement conditionnel} (LangGraph \code{StateGraph}) : \code{data\_quality} $\to$ (\code{risk\_analyst} si les donn\'ees sont exploitables~; \code{blocked\_alert} puis fin si une anomalie critique les rend inexploitables). L'\'etat partag\'e est un objet Pydantic~; le statut final est \textsc{completed}, \textsc{blocked} ou \textsc{analysis\_failed} (audit fait, LLM indisponible).
+
+\begin{figure}[h]\centering
+\begin{tikzpicture}[font=\scriptsize,node distance=5mm,
+ box/.style={draw=acc,fill=soft,rounded corners=2pt,align=center,minimum height=7mm,inner sep=3pt},
+ end/.style={draw=gray,fill=white,rounded corners=6pt,align=center,minimum height=6mm,inner sep=3pt},
+ arr/.style={-{Stealth[length=1.8mm]},acc,thick}]
+\node[end] (s) {\textsc{start}};
+\node[box,right=of s] (dq) {\code{data\_quality}\\r\`egles, sans LLM};
+\node[box,right=26mm of dq] (ra) {\code{risk\_analyst}\\Gemini, sortie structur\'ee};
+\node[end,right=of ra] (e1) {\textsc{end}\\\textsc{completed}};
+\node[box,below=6mm of ra] (ba) {\code{blocked\_alert}\\alerte d\'eterministe};
+\node[end,right=of ba] (e2) {\textsc{end}\\\textsc{blocked}};
+\draw[arr] (s)--(dq); \draw[arr] (dq)--node[above,font=\tiny]{\textsc{passed/warning}}(ra); \draw[arr] (ra)--(e1);
+\draw[arr] (dq) |- node[below,pos=.75]{\textsc{blocked}} (ba); \draw[arr] (ba)--(e2);
+\end{tikzpicture}
+\caption{Graphe LangGraph du pipeline d'audit et de diagnostic. Si le LLM est indisponible, l'audit est tout de m\^eme renvoy\'e (\textsc{analysis\_failed}).}
+\end{figure}
+\textbf{Trace r\'eelle de l'agent climat} (SCR Non-Vie 163,11~M\texteuro, Gemini)~: \code{query\_portfolio\_database} (lecture des villes et valeurs assur\'ees) $\to$ \code{fetch\_geospatial\_weather\_api} (15 zones en une liste) $\to$ \code{compute\_climate\_stress}~; la r\'eponse r\'edig\'ee reprend les pourcentages calcul\'es par le code. Pour l'agent EIOPA, la trace attendue est \code{search} $\to$ \code{get\_own\_funds\_portfolio} $\to$ \code{check\_tier\_limits} $\to$ \code{generate\_excel\_qrt}.
+
+\subsection{Pourquoi cette architecture, et pas une autre}
+\begin{itemize}
+\item \textbf{Un appel monolithique} (un prompt qui lit le QRT, calcule le SCR et r\'edige) serait pire~: le mod\`ele ferait des calculs, non reproductibles ni auditables~; une anomalie de donn\'ees ne pourrait pas \^etre \emph{bloquante} avant tout appel au LLM (co\^ut et risque de diagnostic fond\'e sur des donn\'ees fausses).
+\item \textbf{Cha\^ine s\'equentielle avec porte} pour le pipeline~: l'ordre est fixe (on n'analyse pas ce qu'on n'a pas valid\'e) et le branchement est une simple condition~; un orchestrateur LLM ajouterait de la latence, du co\^ut et de l'impr\'evisibilit\'e pour une d\'ecision que le code prend mieux.
+\item \textbf{Agents \`a outils} pour EIOPA et Climat, o\`u l'\emph{ordre} des actions d\'epend de la question (chercher la r\`egle, lire les donn\'ees, calculer, \'eventuellement g\'en\'erer un fichier~; interroger la base puis chaque zone). Garde-fou commun~: \emph{le mod\`ele choisit et encha\^ine les outils, mais ne saisit jamais un chiffre}~; sources, \'eligibilit\'e, fichier et pourcentages viennent de l'\'etat des outils. Si tous les mod\`eles \'echouent, le calcul d\'eterministe est renvoy\'e (\textsc{llm\_unavailable}).
+\item \textbf{Hi\'erarchique ou ma\^itre--ouvriers} ?~ Rejet\'e~: seulement deux agents LLM par flux, sans sous-t\^aches parall\`eles~; la complexit\'e ne se justifie pas (consigne du sujet~: une architecture simple et d\'efendable).
+\end{itemize}
+\textbf{Robustesse.} Rotation de cl\'es API et de mod\`eles (3 mod\`eles $\times$ les cl\'es configur\'ees, p\'eriode de repos de 10 minutes apr\`es un 429), nouvel essai, gestion explicite des erreurs jusqu'\`a l'interface (jamais de r\'esultat invent\'e), 131 tests automatis\'es hors ligne (LLM simul\'e, API simul\'ees).
+
+\section{Multimodalit\'e}
+\textbf{Entr\'ee : PDF avec mise en page.} Le PDF d'un QRT ou d'un rapport prudentiel est converti vers \emph{la m\^eme structure} que l'import Excel (feuilles de lignes), de sorte que l'audit, le moteur SCR, l'analyste et le rapport restent inchang\'es. Trois voies~: (1) \textbf{tableaux} d'un PDF texte lus avec PyMuPDF --- le texte de chaque cellule est reconstruit \`a partir des mots positionn\'es, car l'extraction native des tableaux produisait un texte corrompu~; les tableaux coup\'es sur deux pages et une ligne d\'ebordant sur la page suivante sont recoll\'es~; (2) \textbf{vision} (Gemini, PDF scann\'e ou sans tableau d\'etectable, sortie structur\'ee, valeurs illisibles \`a \code{null})~; (3) \textbf{synth\`ese} (rapport qui publie des r\'esultats~: on relève les chiffres publi\'es et on ne recalcule rien). La voie vision est marqu\'ee \og \`a v\'erifier\fg{}.
+
+\textbf{Sortie : PDF et Excel.} Le rapport d'audit est g\'en\'er\'e en PDF (gabarits Jinja2, graphiques matplotlib, xhtml2pdf) et l'agent EIOPA produit un classeur Excel au format exact des QRT de r\'ef\'erence (test d'aller-retour cellule \`a cellule, et recalcul par le vrai moteur n8n).
+
+\textbf{Apport.} Les assureurs re\c{c}oivent des PDF, pas des tableurs~: la modalit\'e supprime la ressaisie et l'erreur associ\'ee. \emph{Limite}~: sur le PDF \og Rapport Prudentiel -- Assureur Mixte Solide\fg{} la premi\`ere version recalculait un SCR faux~; la voie \og synth\`ese\fg{} et ses contr\^oles de coh\'erence ont corrig\'e le cas, mais l'OCR de documents tr\`es d\'egrad\'es n'est pas \'evalu\'ee.
+
+\section{Climate \& ESG Stress Tester}
+Test de r\'esistance ORSA aux inondations. Pour chaque zone (cellule de 0,1\textdegree), l'API Open-Meteo fournit 15 ans de pr\'ecipitations d'un mod\`ele climatique (EC\_Earth3P\_HR) et les d\'ebits de rivi\`eres~; la probabilit\'e annuelle $p$ d'un jour de pluie $\geq 40$~mm (seuil suppos\'e) est relev\'ee de 25\,\% si les rivi\`eres sont d\'ej\`a tr\`es hautes, puis $P_N = 1-(1-p)^N$ sur l'horizon $N$. La part du SCR Non-Vie menac\'ee est $\sum_z V_z P_{N,z} / \sum_z V_z$ ($V_z$~: valeur assur\'ee avec garantie inondation), la perte attendue $= 2\,\% \times \sum_z V_z P_{N,z}$ (taux suppos\'e). Exemple r\'eel, SCR Non-Vie 193,11~M\texteuro, portefeuille de d\'emonstration~: 46,7\,\% \`a 3 ans, 51,6\,\% \`a 5 ans, 57,5\,\% \`a 10 ans~; la part en zones \`a risque \'elev\'e reste 34,8\,\%. \textbf{Ce n'est pas un mod\`ele de catastrophe calibr\'e} (un seul mod\`ele climatique, seuil et taux de dommage suppos\'es), et le r\'esultat ne d\'epend pas du SCR (seuls les montants en M\texteuro{} en d\'ependent).
+
+\section{Tests, \'echecs et limites}\label{sec:echecs}
+\textbf{Ce qui n'a pas march\'e (et pourquoi).}
+\begin{itemize}
+\item \emph{Agent LLM dans n8n}~: erreurs \og fetch failed\fg{} (r\'eseau du conteneur), mod\`ele retir\'e (404), surcharge 503, conflit de chemins de webhooks apr\`es import~; d'o\`u le passage des agents LLM en Python (testables, rejouables), n8n gardant le d\'eterministe.
+\item \emph{Quotas Gemini (429)}~: les agents tombaient en panne quand un mod\`ele \'etait \'epuis\'e~; correctif~: rotation de cl\'es/mod\`eles et repli d\'eterministe.
+\item \emph{Sensibilit\'e du stress test climatique}~: la premi\`ere version (classes figées) donnait toujours 20\,\%~; refaite en probabilit\'es sur l'horizon. Un cache disque pollu\'e par un de nos tests a faussé un run~; tests isol\'es depuis. Une API gratuite trop sollicit\'ee (429) imposait de raccourcir la fen\^etre de 25 \`a 15 ans.
+\item \emph{Moteur SCR}~: ordre des modules d\'ecal\'e entre le vecteur et la matrice BSCR (corrig\'e), actifs incorporels mal agr\'eg\'es dans le g\'en\'erateur de donn\'ees de test (corrig\'e).
+\item \emph{Service obsol\`ete}~: des r\'esultats \og qui ne changent pas\fg{} venaient d'un serveur non red\'emarr\'e apr\`es modification du code.
+\end{itemize}
+\textbf{Tests.} 131 tests automatis\'es sans r\'eseau (mod\`ele de chat scripté qui appelle r\'eellement les outils, API simul\'ees)~:
+\begin{center}\small\begin{tabular}{@{}lrl@{}}\toprule
+\textbf{Suite} & \textbf{Tests} & \textbf{Ce qui est v\'erifi\'e}\\\midrule
+\code{pipeline/tests} & 55 & audit, branchement, garde-fous, repli de mod\`ele, texte d\'egrad\'e\\
+\code{extraction/tests} & 29 & tableaux, lignes orphelines, modes vision/synth\`ese\\
+\code{eiopa\_agent/tests} & 28 & limites de Tier, arrondi, fid\'elit\'e au classeur de r\'ef\'erence, moteur r\'eel\\
+\code{climate\_agent/tests} & 19 & SQL lecture seule, probabilit\'es, portefeuille import\'e, pannes d'API\\\bottomrule
+\end{tabular}\end{center}
+\textbf{Limites ouvertes.} Orchestration non int\'egralement port\'ee par n8n~; corpus sans les r\`egles de Tier et avec des diapositives-images~; \'evaluation du retrieval sur 13 questions seulement (indicative) et sans mesure de la qualit\'e des r\'eponses g\'en\'er\'ees~; pas de comparaison de mod\`eles d'embedding~; co\^uts API non chiffr\'es~; l'analyste ne dispose pas du RAG comme outil.
+
+\section{Ex\'ecution et reproductibilit\'e}
+\begin{lstlisting}
+# 1. Service Python (RAG + agents)
+cd rag_service ; python -m venv .venv ; .venv/Scripts/activate ; pip install -r requirements.txt
+copy .env.example .env            # puis renseigner GEMINI_API_KEY
+uvicorn main:app --port 8001
+# 2. Interface Next.js (http://localhost:3000)
+npm install ; npm run dev
+# 3. n8n : importer n8n/solvarisk-workflow.json, l'activer (webhooks scr, report-pdf, notify)
+# Tests : python -m pytest climate_agent/tests eiopa_agent/tests pipeline/tests extraction/tests -q
+# Evaluation du retrieval : python -m eval.retrieval_eval ; python -m eval.make_report
+\end{lstlisting}
+Les cl\'es API sont dans \code{rag\_service/.env} (ignor\'e par git, jamais renvoy\'ees par l'API, seul le \emph{nom} de la variable utilis\'ee est expos\'e). Le corpus se met \`a jour en d\'eposant des PDF dans \code{rag\_service/documents/} (index incr\'emental). Co\^ut~: mod\`eles \og flash\fg{} de Gemini avec rotation de cl\'es~; le retrieval, le reranking et l'\'evaluation sont locaux.
+
+\section{Conclusion}
+Nous avons privil\'egi\'e un principe d\'efendable~: \emph{le LLM d\'ecide, le code calcule}. Chaque agent a un r\^ole mesurable, des garde-fous v\'erifiables et un repli d\'eterministe~; les \'echecs ont fait \'evoluer les prompts (biblioth\`eque), l'architecture (agents Python) et les m\'ethodes (stress test). La suite prioritaire~: orchestration n8n du pipeline, OCR des diapositives, ajout du r\`eglement d\'el\'egu\'e au corpus et \'evaluation de la qualit\'e des r\'eponses.
+\end{document}
