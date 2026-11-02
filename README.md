@@ -317,13 +317,7 @@ SolvaRisk vise à :
 
 ---
 
-## ⚠️ Avertissement
 
-SolvaRisk est un projet académique et technique conçu comme un outil d'aide à la décision.
-
-Les informations, calculs, explications générées par l'intelligence artificielle et recommandations fournis par la plateforme doivent être examinés et validés par des professionnels qualifiés en assurance, actuariat, gestion des risques et conformité avant toute utilisation dans le cadre d'un reporting officiel Solvabilité II ou d'une décision réglementaire.
-
-La plateforme ne remplace ni les évaluations actuarielles officielles, ni les exigences réglementaires, ni le jugement professionnel.
 
 ---
 
