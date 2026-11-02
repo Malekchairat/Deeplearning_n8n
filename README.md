@@ -322,5 +322,5 @@ SolvaRisk vise à :
 ---
 
 <p align="center">
-  <strong>SolvaRisk — L'intelligence artificielle au service d'une gestion plus intelligente des risques en assurance.</strong>
+  <strong>SolvaRisk —  L'intelligence artificielle au service d'une gestion plus intelligente des risques en assurance.</strong>
 </p>
