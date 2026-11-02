@@ -1,29 +1,9 @@
-# Local environment files and secrets
+﻿node_modules/
+.next/
+.venv/
+venv/
+__pycache__/
+*.pyc
 .env
 .env.*
 !.env.example
-!.env.*.example
-
-# JavaScript dependencies and build output
-node_modules/
-.next/
-out/
-dist/
-
-# Python caches and virtual environments
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-
-# Local application data
-rag_service/chroma_db_v2/
-rag_service/generated/
-rag_service/climate_agent/*.db
-rag_service/climate_agent/cache/
-
-# Local logs and editor files
-*.log
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
