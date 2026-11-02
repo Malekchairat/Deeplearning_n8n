@@ -83,7 +83,13 @@ def test_s2301_workbook_layout_and_values():
     wb = load_workbook(f.path)
     assert wb.sheetnames == ["Fonds_Propres_Ratios", "Synthese_Instruments", "Controles_Limites", "Synthese_Sources"]
     rows = {r[1]: r[2] for r in wb["Fonds_Propres_Ratios"].iter_rows(min_row=2, values_only=True) if r[1]}
-    assert rows["Fonds propres éligibles pour couvrir le SCR"] == 372.09 and rows["Tier 2 (dettes subordonnées)"] == 95 and rows["Ratio de couverture MCR"] == 238.08
+    assert rows == {
+        "Tier 1 non restreint": 228.5,
+        "Tier 1 restreint": 18,
+        "Tier 2 (dettes subordonnées)": 95,
+        "Tier 3 (DTA nets)": 42,
+        "Fonds propres disponibles totaux": 383.5,
+    }
     ctrl = [r for r in wb["Controles_Limites"].iter_rows(min_row=2, values_only=True) if r[0]]
     assert all(r[4] in ("OK", "PLAFONNÉ", "ÉCART") for r in ctrl if r[4]) and any(r[4] == "PLAFONNÉ" for r in ctrl)
     sources = wb["Synthese_Sources"]
@@ -106,7 +112,7 @@ def test_generated_file_goes_back_through_our_own_data_quality_agent():
     heads = [c.value for c in ws[1]]
     positions = [{"_sheet": "Fonds_Propres_Ratios", **dict(zip(heads, r))} for r in ws.iter_rows(min_row=2, values_only=True)]
     report = audit_portfolio(PortfolioPayload(source={"system": "x", "extraction_date": "2026-10-27", "reference": "r"}, positions=positions))
-    assert report.status != "BLOCKED" and report.rows_audited == len(positions) == 13
+    assert report.status != "BLOCKED" and report.rows_audited == len(positions) == 5
 
 
 def test_s2501_needs_the_scr_result():
@@ -117,8 +123,9 @@ def test_s2501_needs_the_scr_result():
                 "details": {"bscr": 250.48, "diversificationBenefit": -112.42}}
     f = excel_qrt.write_qrt("S.25.01", MUTUELLE, e, [], None, solvency=solvency)
     rows = {r[0]: r[3] for r in load_workbook(f.path)["S2501_SCR"].iter_rows(min_row=2, values_only=True) if r[0]}          # column D = Net (C0030)
-    assert rows["S.25.01-R0010"] == 108.73 and rows["S.25.01-R0050"] == 163.11 and rows["S.25.01-R0200"] == 251.17
+    assert rows["S.25.01-R0010"] == 108.73 and rows["S.25.01-R0050"] == 163.11
     assert rows["S.25.01-R0030"] == 14.3 and rows["S.25.01-R0100"] == 250.48          # "Non-Vie" must not land on the Vie line (it contains "vie")
+    assert "S.25.01-R0200" not in rows
 
 
 def test_unknown_template_is_refused():

@@ -2,8 +2,8 @@
 
 The workbook mirrors the project's reference QRT files (qrt_pieuvre_scr/*.xlsx): the two INPUT sheets keep exactly their layout,
 
-  S2501_SCR             Code EIOPA | Rubrique | Brut (C0040) | Net (C0030) | Unité      risk modules, op. risk, loss absorption, SCR
-  Fonds_Propres_Ratios  Code EIOPA | Rubrique | Valeur | Unité                           Tier 1/2/3, eligible amounts, MCR, ratios
+  S2501_SCR             Code EIOPA | Rubrique | Brut (C0040) | Net (C0030) | Unité      risk modules, op. risk, loss absorption
+  Fonds_Propres_Ratios  Code EIOPA | Rubrique | Valeur | Unité                           Tier 1/2/3 and available own funds
 
 so that "Importer QRT" -> "Calculer" (and the n8n engine) read them as they read any QRT. The result sheets of the reference files
 (Pieuvre_SCR, Synthese, Matrices_Correlation) are NOT written: the SCR engine produces them and ignores them on input.
@@ -70,8 +70,7 @@ def _num(value: Any) -> float | None:
 
 
 def s2501_rows(portfolio: OwnFundsPortfolio, solvency: dict[str, Any] | None) -> tuple[list[list[Any]], list[str]]:
-    """S.25.01 lines in the reference layout. Only what was provided is written: no figure is derived or invented
-    (BSCR and diversification are results of the SCR calculation: written only if the caller supplies them)."""
+    """S.25.01 input lines. SCR is intentionally not written: the SCR engine calculates it later."""
     warnings: list[str] = []
     modules = (solvency or {}).get("modules") or []
     details = (solvency or {}).get("details") or {}
@@ -95,7 +94,6 @@ def s2501_rows(portfolio: OwnFundsPortfolio, solvency: dict[str, Any] | None) ->
         # lines without a mitigation effect carry the same amount gross and net, as in the reference files
         brut = net if key in ("intangibles", "operationalRisk", "lacTp", "lacDt") else None
         rows.append([f"S.25.01-{code}", label, brut, net, "M€"])
-    rows.append(["S.25.01-R0200", "SCR", None, round(portfolio.scr, 2), "M€"])
     rows.sort(key=lambda r: r[0])
     if _num(details.get("operationalRisk")) is None:
         warnings.append("Risque opérationnel (R0130) non fourni : l'agent SCR le comptera à 0.")
@@ -103,22 +101,12 @@ def s2501_rows(portfolio: OwnFundsPortfolio, solvency: dict[str, Any] | None) ->
 
 
 def _own_funds_rows(e: Eligibility, portfolio: OwnFundsPortfolio) -> list[list[Any]]:
-    """Same 15 lines, codes and labels as the reference Fonds_Propres_Ratios sheet (optional MCR lines only when provided)."""
+    """Write only own-funds inputs; SCR/MCR results are deliberately left to the SCR engine."""
     rows: list[list[Any]] = [
         ["S.23.01-R0020", "Tier 1 non restreint", e.t1_unrestricted, "M€"], ["S.23.01-R0030", "Tier 1 restreint", e.t1_restricted, "M€"],
         ["S.23.01-R0040", "Tier 2 (dettes subordonnées)", e.t2, "M€"], ["S.23.01-R0050", "Tier 3 (DTA nets)", e.t3, "M€"],
         ["S.23.01-R0060", "Fonds propres disponibles totaux", e.available, "M€"],
-        ["S.23.01-R0070", "Tier 1 éligible (limite restreint 20%)", e.t1_eligible, "M€"], ["S.23.01-R0080", "Tier 2 éligible", e.t2_eligible, "M€"],
-        ["S.23.01-R0090", "Tier 3 éligible (plafond 15% SCR)", e.t3_eligible, "M€"], ["S.23.01-R0100", "Fonds propres éligibles pour couvrir le SCR", e.eligible_scr, "M€"],
     ]
-    if portfolio.mcr_linear is not None:
-        rows.append(["S.28.01-R0010", "MCR linéaire", round(portfolio.mcr_linear, 2), "M€"])
-    if portfolio.amcr is not None:
-        rows.append(["S.28.01-R0330", "Plancher absolu (AMCR)", round(portfolio.amcr, 2), "M€"])
-    rows += [["S.28.01-R0310", "MCR retenu (couloir 25%-45% du SCR)", round(portfolio.mcr, 2), "M€"], ["S.28.01-R0340", "Fonds propres éligibles pour couvrir le MCR", e.eligible_mcr, "M€"],
-             ["RATIO", "Ratio de couverture SCR", e.ratio_scr_pct, "%"]]
-    if e.ratio_mcr_pct is not None:
-        rows.append(["RATIO", "Ratio de couverture MCR", e.ratio_mcr_pct, "%"])
     return rows
 
 

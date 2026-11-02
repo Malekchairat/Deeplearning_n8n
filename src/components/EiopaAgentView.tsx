@@ -48,7 +48,6 @@ const EMPTY_EXTRA: Extra = { intang: "", op: "", lacTp: "", lacDt: "", mcrLinear
 const EXTRA_FIELDS: { key: keyof Extra; label: string }[] = [
   { key: "intang", label: "Actifs incorporels (R0070)" }, { key: "op", label: "Risque opérationnel (R0130)" },
   { key: "lacTp", label: "Absorption provisions techniques (R0140)" }, { key: "lacDt", label: "Absorption impôts différés (R0150)" },
-  { key: "mcrLinear", label: "MCR linéaire (S.28.01-R0010)" }, { key: "amcr", label: "Plancher absolu AMCR (R0330)" },
 ];
 const optionalNumber = (text: string) => (text.trim() === "" ? null : toNumber(text));
 const EXAMPLE_QUESTION = "Vérifie si nos obligations subordonnées respectent les limites du Tier 2 selon la réglementation, et génère l'état S.23.01 des fonds propres au format Excel.";
@@ -175,11 +174,9 @@ export default function EiopaAgentView({ onTrace }: { onTrace: (agent: Trace["ag
             </div>
           </div>
           {importNote && <p role="status" className={`mt-4 rounded-lg border px-3 py-2 text-xs ${importNote.ok ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{importNote.text}</p>}
-          <div className="mt-5 grid grid-cols-2 gap-3">
-            {([["SCR (M€)", scr, setScr], ["MCR (M€)", mcr, setMcr]] as const).map(([label, value, set]) => (
-              <label key={label} className="block text-xs font-semibold text-stone">{label}<input inputMode="decimal" value={value} onChange={(e) => set(e.target.value)} className="mt-1 w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-sm text-ink outline-none focus:border-clay" /></label>
-            ))}
-          </div>
+          <p className="mt-5 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
+            Le SCR et le MCR ne sont pas saisis ici : ils seront calculés ultérieurement par le moteur SCR à partir des données QRT.
+          </p>
           <p className="mt-6 font-mono text-xs font-bold text-stone">INSTRUMENTS</p>
           <div className="mt-2 space-y-2">
             {rows.map((row) => (

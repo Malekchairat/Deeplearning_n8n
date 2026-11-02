@@ -115,8 +115,8 @@ def build_tools(ctx: AgentContext) -> list:
     @tool
     def generate_excel_qrt(template: Literal["S.23.01", "S.25.01"]) -> str:
         """Génère et enregistre sur le serveur un classeur Excel QRT prérempli à partir du portefeuille (jamais à partir de montants que tu
-        fournirais). Le classeur reprend la mise en forme des fichiers QRT de référence de SolvaRisk : feuille S2501_SCR (modules de risque,
-        si fournis) et feuille Fonds_Propres_Ratios, de sorte que l'agent SCR peut le charger et le calculer. `template` : « S.23.01 »
+        fournirais). Le classeur contient les instruments, les fonds propres disponibles et, s'ils sont fournis, les modules de risque.
+        Les résultats SCR/MCR et les ratios ne sont jamais préremplis : l'agent SCR les calcule ensuite. `template` : « S.23.01 »
         (état des fonds propres) ou « S.25.01 » (exige les modules de risque). Le résultat indique si le fichier est calculable par
         l'agent SCR : rapporte-le tel quel. À appeler seulement si l'utilisateur demande un état ou un fichier."""
         try:
